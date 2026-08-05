@@ -1,24 +1,23 @@
 const express = require('express');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino'); 
+const qrcode = require('qrcode-terminal'); // 1. ADD THIS IMPORT
 
 const app = express();
 app.use(express.json());
 
-// Pull port and API key from Render's Environment Variables
 const port = process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
 
 let sock;
 
 async function connectToWhatsApp() {
-    // Saves session data locally so you don't have to scan the QR code every single time
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
     
     sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true, // This will print the QR code in your Render logs
-        logger: pino({ level: 'silent' }) // Mutes excessive Baileys background logs
+        // 2. REMOVE the printQRInTerminal line from here
+        logger: pino({ level: 'silent' }) 
     });
 
     sock.ev.on('connection.update', (update) => {
@@ -26,6 +25,8 @@ async function connectToWhatsApp() {
         
         if (qr) {
             console.log('>>> ACTION REQUIRED: Check Render Logs and scan this QR code with your WhatsApp! <<<');
+            // 3. ADD THIS LINE to manually print the QR code to the Render console
+            qrcode.generate(qr, { small: true }); 
         }
         
         if (connection === 'close') {
@@ -41,6 +42,8 @@ async function connectToWhatsApp() {
 
     sock.ev.on('creds.update', saveCreds);
 }
+
+// ... (The rest of your endpoints remain exactly the same)
 
 // Start the WhatsApp connection
 connectToWhatsApp();
