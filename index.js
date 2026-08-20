@@ -1,9 +1,10 @@
 const express = require('express');
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
-const fs = require('fs');
-const path = require('path');
+
+// 1. Import the new MongoDB Auth Package (Removed fs and path entirely)
+const useBaileysAuthState = require('baileysauth').default || require('baileysauth');
 
 const app = express();
 app.use(express.json());
@@ -14,30 +15,31 @@ app.use(express.json());
 const port = process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
 
-// Renamed folder to completely bypass old corrupted session loops in PROD
-const AUTH_DIR = path.join(__dirname, 'auth_info_prod_v2'); 
+// 2. Fetch the MongoDB URI from Render
+const MONGODB_URI = process.env.MONGODB_URI;
 
 let sock;
 let isConnected = false;
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    // 3. Replaced useMultiFileAuthState with MongoDB Auth
+    // This pulls 'state', 'saveCreds', and a 'wipeCreds' function to safely delete corrupted sessions
+    const { state, saveCreds, wipeCreds } = await useBaileysAuthState(MONGODB_URI);
     
-    // Fetch the absolute latest version from WhatsApp servers dynamically
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     sock = makeWASocket({
         logger: pino({ level: 'silent' }),
-        auth: state,
+        auth: state, // Now pulling directly from your MongoDB cluster
         printQRInTerminal: false,
         version: version,
-        browser: Browsers.macOS('Desktop') // Emulates a clean Desktop Mac Chrome browser
+        browser: Browsers.macOS('Desktop')
     });
 
     sock.ev.on('creds.update', saveCreds);
 
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
@@ -45,17 +47,15 @@ async function connectToWhatsApp() {
             console.log('       SCAN THIS QR CODE WITH PRODUCTION WHATSAPP           ');
             console.log('============================================================\n');
             qrcode.generate(qr, { small: true });
-            console.log('\n============================================================\n');
         }
 
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             
-            // 405 Method Not Allowed means invalid session or version mismatch
-            // This will automatically wipe the session and try again if it fails
+            // 4. Update the clearing logic to wipe MongoDB instead of local files
             if (statusCode === 405) {
-                console.log('Received Status 405. Clearing corrupted session to generate new QR...');
-                if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                console.log('Received Status 405. Wiping corrupted MongoDB session...');
+                if (wipeCreds) await wipeCreds(); 
                 setTimeout(connectToWhatsApp, 3000);
                 return;
             }
@@ -67,8 +67,8 @@ async function connectToWhatsApp() {
             if (shouldReconnect) {
                 setTimeout(connectToWhatsApp, 3000);
             } else {
-                console.log('Logged out. Clearing auth directory...');
-                if (fs.existsSync(AUTH_DIR)) fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                console.log('Logged out. Wiping MongoDB auth...');
+                if (wipeCreds) await wipeCreds();
                 setTimeout(connectToWhatsApp, 3000);
             }
         } else if (connection === 'open') {
