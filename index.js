@@ -2,9 +2,8 @@ const express = require('express');
 const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
-
-// 1. Import the new MongoDB Auth Package (Removed fs and path entirely)
-const useBaileysAuthState = require('baileysauth').default || require('baileysauth');
+const { MongoClient } = require('mongodb'); // The official MongoDB package
+const useMongoDBAuthState = require('./mongoAuth'); // Our new custom bulletproof adapter
 
 const app = express();
 app.use(express.json());
@@ -14,24 +13,29 @@ app.use(express.json());
 // ---------------------------------------------------------
 const port = process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
-
-// 2. Fetch the MongoDB URI from Render
-const MONGODB_URI = process.env.MONGODB_URI;
+const MONGODB_URI = process.env.MONGODB_URI; // Fetched directly from Render variables
 
 let sock;
 let isConnected = false;
 
 async function connectToWhatsApp() {
-    // 3. Replaced useMultiFileAuthState with MongoDB Auth
-    // This pulls 'state', 'saveCreds', and a 'wipeCreds' function to safely delete corrupted sessions
-    const { state, saveCreds, wipeCreds } = await useBaileysAuthState(MONGODB_URI);
+    console.log('Connecting to MongoDB database...');
+    const mongoClient = new MongoClient(MONGODB_URI);
+    await mongoClient.connect();
+    
+    // This creates a collection named 'auth_session' inside your tripsarc_whatsapp database
+    const collection = mongoClient.db().collection('auth_session');
+    console.log('Successfully connected to MongoDB!');
+
+    // Initialize our Auth State using the MongoDB collection
+    const { state, saveCreds, wipeCreds } = await useMongoDBAuthState(collection);
     
     const { version, isLatest } = await fetchLatestBaileysVersion();
     console.log(`Using WA v${version.join('.')}, isLatest: ${isLatest}`);
 
     sock = makeWASocket({
         logger: pino({ level: 'silent' }),
-        auth: state, // Now pulling directly from your MongoDB cluster
+        auth: state, 
         printQRInTerminal: false,
         version: version,
         browser: Browsers.macOS('Desktop')
@@ -52,10 +56,9 @@ async function connectToWhatsApp() {
         if (connection === 'close') {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             
-            // 4. Update the clearing logic to wipe MongoDB instead of local files
             if (statusCode === 405) {
                 console.log('Received Status 405. Wiping corrupted MongoDB session...');
-                if (wipeCreds) await wipeCreds(); 
+                await wipeCreds(); 
                 setTimeout(connectToWhatsApp, 3000);
                 return;
             }
@@ -68,7 +71,7 @@ async function connectToWhatsApp() {
                 setTimeout(connectToWhatsApp, 3000);
             } else {
                 console.log('Logged out. Wiping MongoDB auth...');
-                if (wipeCreds) await wipeCreds();
+                await wipeCreds();
                 setTimeout(connectToWhatsApp, 3000);
             }
         } else if (connection === 'open') {
