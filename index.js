@@ -146,7 +146,15 @@ app.post('/send-message', async (req, res) => {
 
     try {
         const jid = `${phone}@s.whatsapp.net`; 
-        await sock.sendMessage(jid, { text: message });
+        
+        // 1. Capture the return object when sending the message
+        const sentMsg = await sock.sendMessage(jid, { text: message });
+        
+        // 2. Instantly cache it so your sender phone can sync the encryption key
+        if (sentMsg && sentMsg.key && sentMsg.key.id && sentMsg.message) {
+            messageCache.set(sentMsg.key.id, sentMsg.message);
+        }
+
         res.json({ success: true, message: 'Message successfully sent to Production WhatsApp!' });
     } catch (error) {
         console.error('Error sending message:', error);
