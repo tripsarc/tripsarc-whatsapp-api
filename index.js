@@ -3,8 +3,8 @@ const {
     default: makeWASocket, 
     DisconnectReason, 
     fetchLatestBaileysVersion, 
-    Browsers, 
-    makeInMemoryStore 
+    Browsers
+    // Notice we completely removed makeInMemoryStore from here
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
@@ -22,11 +22,12 @@ const port = process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
 const MONGODB_URI = process.env.MONGODB_URI;
 
-// In-memory cache and store to resolve sender/receiver "Waiting for this message"
+// ---------------------------------------------------------
+// CUSTOM LIGHTWEIGHT MESSAGE CACHE 
+// ---------------------------------------------------------
 const msgRetryCounterCache = new NodeCache();
-const store = makeInMemoryStore({ 
-    logger: pino().child({ level: 'silent', stream: 'store' }) 
-});
+// Cache messages for exactly 5 minutes (300 seconds) to handle delivery retries without wasting RAM
+const messageCache = new NodeCache({ stdTTL: 300, checkperiod: 60 }); 
 
 let sock;
 let isConnected = false;
@@ -52,16 +53,23 @@ async function connectToWhatsApp() {
         browser: Browsers.macOS('Desktop'),
         msgRetryCounterCache,
         getMessage: async (key) => {
-            if (store) {
-                const msg = await store.loadMessage(key.remoteJid, key.id);
-                return msg?.message || undefined;
+            // If your phone requests a retry, find the original message from our NodeCache
+            const cachedMsg = messageCache.get(key.id);
+            if (cachedMsg) {
+                return cachedMsg;
             }
-            return { conversation: 'Message missing from store' };
+            return { conversation: 'Message missing from cache' };
         }
     });
 
-    // Listen to sent/received messages and cache them
-    store.bind(sock.ev);
+    // Automatically capture all sent/received messages and temporarily save them to the cache
+    sock.ev.on('messages.upsert', ({ messages }) => {
+        for (const m of messages) {
+            if (m.key && m.key.id && m.message) {
+                messageCache.set(m.key.id, m.message);
+            }
+        }
+    });
 
     sock.ev.on('creds.update', saveCreds);
 
