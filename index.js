@@ -1,9 +1,16 @@
 const express = require('express');
-const { default: makeWASocket, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    Browsers, 
+    makeInMemoryStore 
+} = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
-const { MongoClient } = require('mongodb'); // The official MongoDB package
-const useMongoDBAuthState = require('./mongoAuth'); // Our new custom bulletproof adapter
+const { MongoClient } = require('mongodb');
+const useMongoDBAuthState = require('./mongoAuth');
+const NodeCache = require('node-cache');
 
 const app = express();
 app.use(express.json());
@@ -13,7 +20,13 @@ app.use(express.json());
 // ---------------------------------------------------------
 const port = process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
-const MONGODB_URI = process.env.MONGODB_URI; // Fetched directly from Render variables
+const MONGODB_URI = process.env.MONGODB_URI;
+
+// In-memory cache and store to resolve sender/receiver "Waiting for this message"
+const msgRetryCounterCache = new NodeCache();
+const store = makeInMemoryStore({ 
+    logger: pino().child({ level: 'silent', stream: 'store' }) 
+});
 
 let sock;
 let isConnected = false;
@@ -23,11 +36,9 @@ async function connectToWhatsApp() {
     const mongoClient = new MongoClient(MONGODB_URI);
     await mongoClient.connect();
     
-    // This creates a collection named 'auth_session' inside your tripsarc_whatsapp database
     const collection = mongoClient.db().collection('auth_session');
     console.log('Successfully connected to MongoDB!');
 
-    // Initialize our Auth State using the MongoDB collection
     const { state, saveCreds, wipeCreds } = await useMongoDBAuthState(collection);
     
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -38,8 +49,19 @@ async function connectToWhatsApp() {
         auth: state, 
         printQRInTerminal: false,
         version: version,
-        browser: Browsers.macOS('Desktop')
+        browser: Browsers.macOS('Desktop'),
+        msgRetryCounterCache,
+        getMessage: async (key) => {
+            if (store) {
+                const msg = await store.loadMessage(key.remoteJid, key.id);
+                return msg?.message || undefined;
+            }
+            return { conversation: 'Message missing from store' };
+        }
     });
+
+    // Listen to sent/received messages and cache them
+    store.bind(sock.ev);
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -95,33 +117,27 @@ app.get('/', (req, res) => {
 });
 
 // ---------------------------------------------------------
-// ROUTE: The API Endpoint your WordPress site will talk to
+// ROUTE: The API Endpoint your website will talk to
 // ---------------------------------------------------------
 app.post('/send-message', async (req, res) => {
     const requestKey = req.headers['x-api-key'];
     
-    // 1. Verify the secret key matches what is in Render
     if (requestKey !== API_KEY) {
         return res.status(401).json({ error: 'Unauthorized request. Invalid API Key.' });
     }
 
-    // Block requests if WhatsApp isn't fully connected yet
     if (!isConnected) {
         return res.status(503).json({ error: 'WhatsApp Production is not connected yet. Check Render logs for QR code.' });
     }
 
     const { phone, message } = req.body;
     
-    // 2. Ensure data was sent
     if (!phone || !message) {
         return res.status(400).json({ error: 'Phone number and message are required.' });
     }
 
     try {
-        // Baileys requires the phone number to end with @s.whatsapp.net for individuals
         const jid = `${phone}@s.whatsapp.net`; 
-        
-        // 3. Send the message
         await sock.sendMessage(jid, { text: message });
         res.json({ success: true, message: 'Message successfully sent to Production WhatsApp!' });
     } catch (error) {
@@ -131,6 +147,6 @@ app.post('/send-message', async (req, res) => {
 });
 
 app.listen(port, () => {
-    console.log(`TripsArc Production Server running on port ${port}`);
+    console.log(`Production Server running on port ${port}`);
     connectToWhatsApp();
 });
