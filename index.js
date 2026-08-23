@@ -162,6 +162,25 @@ app.post('/send-message', async (req, res) => {
     }
 });
 
+// ---------------------------------------------------------
+// ROUTE: Emergency Session Reset
+// ---------------------------------------------------------
+app.get('/reset-session', async (req, res) => {
+    try {
+        const mongoClient = new MongoClient(MONGODB_URI);
+        await mongoClient.connect();
+        
+        // This instantly deletes all corrupted keys from the database
+        await mongoClient.db().collection('auth_session').deleteMany({});
+        res.send('MongoDB session wiped successfully! Check your Render Logs for a new QR code.');
+        
+        // Kills the server to force Render to restart and generate a new QR
+        setTimeout(() => process.exit(1), 2000); 
+    } catch (error) {
+        res.status(500).send('Error wiping session: ' + error.message);
+    }
+});
+
 app.listen(port, () => {
     console.log(`Production Server running on port ${port}`);
     connectToWhatsApp();
