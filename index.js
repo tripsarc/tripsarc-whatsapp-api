@@ -18,7 +18,7 @@ app.use(express.json());
 // ---------------------------------------------------------
 // PRODUCTION ENVIRONMENT VARIABLES
 // ---------------------------------------------------------
-const port = process.env.SERVER_PORT || 3000;
+const port = process.env.PORT || process.env.SERVER_PORT || 3000;
 const API_KEY = process.env.AUTHENTICATION_API_KEY || 'development-key';
 const MONGODB_URI = process.env.MONGODB_URI;
 
