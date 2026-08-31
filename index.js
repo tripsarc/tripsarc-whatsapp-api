@@ -4,7 +4,6 @@ const {
     DisconnectReason, 
     fetchLatestBaileysVersion, 
     Browsers
-    // Notice we completely removed makeInMemoryStore from here
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
 const pino = require('pino');
@@ -53,7 +52,6 @@ async function connectToWhatsApp() {
         browser: Browsers.macOS('Desktop'),
         msgRetryCounterCache,
         getMessage: async (key) => {
-            // If your phone requests a retry, find the original message from our NodeCache
             const cachedMsg = messageCache.get(key.id);
             if (cachedMsg) {
                 return cachedMsg;
@@ -125,6 +123,13 @@ app.get('/', (req, res) => {
 });
 
 // ---------------------------------------------------------
+// ROUTE: Keep-Alive Ping Route for UptimeRobot
+// ---------------------------------------------------------
+app.get('/ping', (req, res) => {
+    res.status(200).send('TripsArc API is awake!');
+});
+
+// ---------------------------------------------------------
 // ROUTE: The API Endpoint your website will talk to
 // ---------------------------------------------------------
 app.post('/send-message', async (req, res) => {
@@ -135,7 +140,7 @@ app.post('/send-message', async (req, res) => {
     }
 
     if (!isConnected) {
-        return res.status(503).json({ error: 'WhatsApp Production is not connected yet. Check Render logs for QR code.' });
+        return res.status(503).json({ error: 'WhatsApp Production is not connected yet. Check server logs for QR code.' });
     }
 
     const { phone, message } = req.body;
@@ -170,11 +175,9 @@ app.get('/reset-session', async (req, res) => {
         const mongoClient = new MongoClient(MONGODB_URI);
         await mongoClient.connect();
         
-        // This instantly deletes all corrupted keys from the database
         await mongoClient.db().collection('auth_session').deleteMany({});
-        res.send('MongoDB session wiped successfully! Check your Render Logs for a new QR code.');
+        res.send('MongoDB session wiped successfully! Check your runtime logs for a new QR code.');
         
-        // Kills the server to force Render to restart and generate a new QR
         setTimeout(() => process.exit(1), 2000); 
     } catch (error) {
         res.status(500).send('Error wiping session: ' + error.message);
